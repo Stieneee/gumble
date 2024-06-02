@@ -34,7 +34,7 @@ func main() {
 		port = strconv.Itoa(gumble.DefaultPort)
 	}
 
-	resp, err := gumble.Ping(net.JoinHostPort(host, port), *interval, *timeout)
+	resp, err := gumble.PingProto(net.JoinHostPort(host, port), *interval, *timeout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", os.Args[0], err)
 		os.Exit(1)

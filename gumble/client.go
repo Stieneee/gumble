@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/stieneee/gumble/gumble/MumbleProto"
+	"github.com/stieneee/gumble/gumble/proto/MumbleProto"
+	"google.golang.org/protobuf/proto"
 )
 
 // State is the current state of the client's connection to the server.
@@ -31,7 +31,9 @@ const (
 )
 
 // ClientVersion is the protocol version that Client implements.
-const ClientVersion = 1<<16 | 3<<8 | 0
+const ClientVersionV1 uint32 = 1<<16 | 4<<8 | 1
+const ClientVersionV2 uint64 = 1<<48 | 4<<32 | 1 << 16 
+
 
 // Client is the type used to create a connection to a server.
 type Client struct {
@@ -117,7 +119,8 @@ func DialWithDialer(dialer *net.Dialer, addr string, config *Config, tlsConfig *
 
 	// Initial packets
 	versionPacket := MumbleProto.Version{
-		Version:   proto.Uint32(ClientVersion),
+		VersionV1:   proto.Uint32(ClientVersionV1),
+		VersionV2:   proto.Uint64(ClientVersionV2),
 		Release:   proto.String("gumble"),
 		Os:        proto.String(runtime.GOOS),
 		OsVersion: proto.String(runtime.GOARCH),
@@ -127,6 +130,7 @@ func DialWithDialer(dialer *net.Dialer, addr string, config *Config, tlsConfig *
 		Password: &client.Config.Password,
 		Opus:     proto.Bool(getAudioCodec(audioCodecIDOpus) != nil),
 		Tokens:   client.Config.Tokens,
+		ClientType: &client.Config.ClientType,
 	}
 	client.Conn.WriteProto(&versionPacket)
 	client.Conn.WriteProto(&authenticationPacket)

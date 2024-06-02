@@ -26,6 +26,9 @@ type Config struct {
 	// The event listeners used when client events are triggered.
 	Listeners      Listeners
 	AudioListeners AudioListeners
+
+	// Tell the server we are a bot
+	ClientType int32
 }
 
 // NewConfig returns a new Config struct with default values set.

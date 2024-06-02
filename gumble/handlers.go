@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/stieneee/gumble/gumble/MumbleProto"
+	"github.com/stieneee/gumble/gumble/proto/MumbleProto"
 	"github.com/stieneee/gumble/gumble/varint"
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -53,8 +53,16 @@ var handlers = [...]func(*Client, []byte) error{
 
 func parseVersion(packet *MumbleProto.Version) Version {
 	var version Version
-	if packet.Version != nil {
-		version.Version = *packet.Version
+	if packet.VersionV1 != nil {
+		major := uint16(*packet.VersionV1>>16) & 0xFFFF
+		minor := uint8(*packet.VersionV1>>8) & 0xFF
+		patch := uint8(*packet.VersionV1) & 0xFF	
+		version.Version = uint64(major)<<48 | uint64(minor)<<32 | uint64(patch)<<16
+
+	}
+	if packet.VersionV2 != nil {
+		version.Version = *packet.VersionV2
+		
 	}
 	if packet.Release != nil {
 		version.Release = *packet.Release
@@ -1245,9 +1253,18 @@ func (c *Client) handleSuggestConfig(buffer []byte) error {
 	event := ServerConfigEvent{
 		Client: c,
 	}
-	if packet.Version != nil {
+	if packet.VersionV1 != nil {
+		// convert to new version format
+		major := uint64(*packet.VersionV1) >> 16  & 0xFFFF
+		minor := uint64(*packet.VersionV1) >> 8 & 0xFF
+		patch := uint64(*packet.VersionV1) & 0xFF
 		event.SuggestVersion = &Version{
-			Version: packet.GetVersion(),
+			Version: major << 48 | minor << 32 | patch << 16,
+		}
+	}
+	if packet.VersionV2 != nil {
+		event.SuggestVersion = &Version{
+			Version: packet.GetVersionV2(),
 		}
 	}
 	if packet.Positional != nil {
