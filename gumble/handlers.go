@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stieneee/gumble/gumble/proto/MumbleProto"
+	"github.com/stieneee/gumble/gumble/proto/MumbleUDPProto"
 	"github.com/stieneee/gumble/gumble/varint"
 	"google.golang.org/protobuf/proto"
 )
@@ -56,13 +57,13 @@ func parseVersion(packet *MumbleProto.Version) Version {
 	if packet.VersionV1 != nil {
 		major := uint16(*packet.VersionV1>>16) & 0xFFFF
 		minor := uint8(*packet.VersionV1>>8) & 0xFF
-		patch := uint8(*packet.VersionV1) & 0xFF	
+		patch := uint8(*packet.VersionV1) & 0xFF
 		version.Version = uint64(major)<<48 | uint64(minor)<<32 | uint64(patch)<<16
 
 	}
 	if packet.VersionV2 != nil {
 		version.Version = *packet.VersionV2
-		
+
 	}
 	if packet.Release != nil {
 		version.Release = *packet.Release
@@ -81,6 +82,18 @@ func (c *Client) handleVersion(buffer []byte) error {
 	if err := proto.Unmarshal(buffer, &packet); err != nil {
 		return err
 	}
+	if c.Version == nil {
+		c.Version = &Version{}
+	}
+	if packet.VersionV2 != nil {
+		c.Version.Version = *packet.VersionV2
+	} else if packet.VersionV1 != nil {
+		v := *packet.VersionV1
+		major := uint16(v>>16) & 0xFFFF
+		minor := uint16(v>>8) & 0xFF
+		patch := uint16(v) & 0xFF
+		c.Version.Version = (uint64(major) << 48) | (uint64(minor) << 32) | (uint64(patch) << 16)
+	}
 	return nil
 }
 
@@ -88,100 +101,163 @@ func (c *Client) handleUDPTunnel(buffer []byte) error {
 	if len(buffer) < 1 {
 		return errInvalidProtobuf
 	}
-	audioType := (buffer[0] >> 5) & 0x7
-	audioTarget := buffer[0] & 0x1F
 
-	// Opus only
-	// TODO: add handling for other packet types
-	if audioType != audioCodecIDOpus {
-		return errUnsupportedAudio
-	}
+	if c.Version.Version < uint64(1<<48|5<<32) {
+		// old varint decode
+		// Opus only
+		audioType := (buffer[0] >> 5) & 0x7
+		audioTarget := buffer[0] & 0x1F
 
-	// Session
-	buffer = buffer[1:]
-	session, n := varint.Decode(buffer)
-	if n <= 0 {
-		return errInvalidProtobuf
-	}
-	buffer = buffer[n:]
-	user := c.Users[uint32(session)]
-	if user == nil {
-		return errInvalidProtobuf
-	}
-	decoder := user.decoder
-	if decoder == nil {
-		// TODO: decoder pool
-		// TODO: de-reference after stream is done
-		codec := c.audioCodec
-		if codec == nil {
-			return errNoCodec
+		// TODO: add handling for other packet types
+		if audioType != audioCodecIDOpus {
+			return errUnsupportedAudio
 		}
-		decoder = codec.NewDecoder()
-		user.decoder = decoder
-	}
 
-	// Sequence
-	// TODO: use in jitter buffer
-	_, n = varint.Decode(buffer)
-	if n <= 0 {
-		return errInvalidProtobuf
-	}
-	buffer = buffer[n:]
-
-	// Length
-	length, n := varint.Decode(buffer)
-	if n <= 0 {
-		return errInvalidProtobuf
-	}
-	buffer = buffer[n:]
-	// Opus audio packets set the 13th bit in the size field as the terminator.
-	audioLength := int(length) &^ 0x2000
-	if audioLength > len(buffer) {
-		return errInvalidProtobuf
-	}
-
-	pcm, err := decoder.Decode(buffer[:audioLength], AudioMaximumFrameSize)
-	if err != nil {
-		return err
-	}
-
-	event := AudioPacket{
-		Client: c,
-		Sender: user,
-		Target: &VoiceTarget{
-			ID: uint32(audioTarget),
-		},
-		AudioBuffer: AudioBuffer(pcm),
-	}
-
-	if len(buffer)-audioLength == 3*4 {
-		// the packet has positional audio data; 3x float32
-		buffer = buffer[audioLength:]
-
-		event.X = math.Float32frombits(binary.LittleEndian.Uint32(buffer))
-		event.Y = math.Float32frombits(binary.LittleEndian.Uint32(buffer[4:]))
-		event.Z = math.Float32frombits(binary.LittleEndian.Uint32(buffer[8:]))
-		event.HasPosition = true
-	}
-
-	c.volatile.Lock()
-	for item := c.Config.AudioListeners.head; item != nil; item = item.next {
-		c.volatile.Unlock()
-		ch := item.streams[user]
-		if ch == nil {
-			ch = make(chan *AudioPacket)
-			item.streams[user] = ch
-			event := AudioStreamEvent{
-				Client: c,
-				User:   user,
-				C:      ch,
+		// Session
+		buffer = buffer[1:]
+		session, n := varint.Decode(buffer)
+		if n <= 0 {
+			return errInvalidProtobuf
+		}
+		buffer = buffer[n:]
+		user := c.Users[uint32(session)]
+		if user == nil {
+			return errInvalidProtobuf
+		}
+		decoder := user.decoder
+		if decoder == nil {
+			// TODO: decoder pool
+			// TODO: de-reference after stream is done
+			codec := c.audioCodec
+			if codec == nil {
+				return errNoCodec
 			}
-			item.listener.OnAudioStream(&event)
+			decoder = codec.NewDecoder()
+			user.decoder = decoder
 		}
-		ch <- &event
+
+		// Sequence
+		// TODO: use in jitter buffer
+		_, n = varint.Decode(buffer)
+		if n <= 0 {
+			return errInvalidProtobuf
+		}
+		buffer = buffer[n:]
+
+		// Length
+		length, n := varint.Decode(buffer)
+		if n <= 0 {
+			return errInvalidProtobuf
+		}
+		buffer = buffer[n:]
+		// Opus audio packets set the 13th bit in the size field as the terminator.
+		audioLength := int(length) &^ 0x2000
+		if audioLength > len(buffer) {
+			return errInvalidProtobuf
+		}
+
+		pcm, err := decoder.Decode(buffer[:audioLength], AudioMaximumFrameSize)
+		if err != nil {
+			return err
+		}
+
+		event := AudioPacket{
+			Client: c,
+			Sender: user,
+			Target: &VoiceTarget{
+				ID: uint32(audioTarget),
+			},
+			AudioBuffer: AudioBuffer(pcm),
+		}
+
+		if len(buffer)-audioLength == 3*4 {
+			// the packet has positional audio data; 3x float32
+			buffer = buffer[audioLength:]
+
+			event.X = math.Float32frombits(binary.LittleEndian.Uint32(buffer))
+			event.Y = math.Float32frombits(binary.LittleEndian.Uint32(buffer[4:]))
+			event.Z = math.Float32frombits(binary.LittleEndian.Uint32(buffer[8:]))
+			event.HasPosition = true
+		}
+
 		c.volatile.Lock()
+		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
+			c.volatile.Unlock()
+			ch := item.streams[user]
+			if ch == nil {
+				ch = make(chan *AudioPacket)
+				item.streams[user] = ch
+				event := AudioStreamEvent{
+					Client: c,
+					User:   user,
+					C:      ch,
+				}
+				item.listener.OnAudioStream(&event)
+			}
+			ch <- &event
+			c.volatile.Lock()
+		}
+		c.volatile.Unlock()
+	} else {
+		// decode newer protobuf
+		// fmt.Println("Decoding newer protobuf")
+		p := MumbleUDPProto.Audio{}
+		err := proto.Unmarshal(buffer[1:], &p)
+		if err != nil {
+			return err
+		}
+
+		user := c.Users[uint32(p.SenderSession)]
+		if user == nil {
+			return errInvalidProtobuf
+		}
+		decoder := user.decoder
+		if decoder == nil {
+			// TODO: decoder pool
+			// TODO: de-reference after stream is done
+			codec := c.audioCodec
+			if codec == nil {
+				return errNoCodec
+			}
+			decoder = codec.NewDecoder()
+			user.decoder = decoder
+		}
+
+		pcm, err := decoder.Decode(p.OpusData, AudioMaximumFrameSize)
+		if err != nil {
+			return err
+		}
+
+		event := AudioPacket{
+			Client: c,
+			Sender: user,
+			Target: &VoiceTarget{
+				ID: uint32(p.GetTarget()),
+			},
+			AudioBuffer: AudioBuffer(pcm),
+		}
+
+		// TODO positional audio
+
+		c.volatile.Lock()
+		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
+			c.volatile.Unlock()
+			ch := item.streams[user]
+			if ch == nil {
+				ch = make(chan *AudioPacket)
+				item.streams[user] = ch
+				event := AudioStreamEvent{
+					Client: c,
+					User:   user,
+					C:      ch,
+				}
+				item.listener.OnAudioStream(&event)
+			}
+			ch <- &event
+			c.volatile.Lock()
+		}
+		c.volatile.Unlock()
 	}
-	c.volatile.Unlock()
 
 	return nil
 }
@@ -1255,11 +1331,11 @@ func (c *Client) handleSuggestConfig(buffer []byte) error {
 	}
 	if packet.VersionV1 != nil {
 		// convert to new version format
-		major := uint64(*packet.VersionV1) >> 16  & 0xFFFF
+		major := uint64(*packet.VersionV1) >> 16 & 0xFFFF
 		minor := uint64(*packet.VersionV1) >> 8 & 0xFF
 		patch := uint64(*packet.VersionV1) & 0xFF
 		event.SuggestVersion = &Version{
-			Version: major << 48 | minor << 32 | patch << 16,
+			Version: major<<48 | minor<<32 | patch<<16,
 		}
 	}
 	if packet.VersionV2 != nil {

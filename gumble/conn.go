@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stieneee/gumble/gumble/proto/MumbleProto"
+	"github.com/stieneee/gumble/gumble/proto/MumbleUDPProto"
 	"github.com/stieneee/gumble/gumble/varint"
 	"google.golang.org/protobuf/proto"
 )
@@ -62,50 +63,75 @@ func (c *Conn) ReadPacket() (uint16, []byte, error) {
 }
 
 // WriteAudio writes an audio packet to the connection.
-func (c *Conn) WriteAudio(format, target byte, sequence int64, final bool, data []byte, X, Y, Z *float32) error {
-	var buff [1 + varint.MaxVarintLen*2]byte
-	buff[0] = (format << 5) | target
-	n := varint.Encode(buff[1:], sequence)
-	if n == 0 {
-		return errors.New("gumble: varint out of range")
-	}
-	l := int64(len(data))
-	if final {
-		l |= 0x2000
-	}
-	m := varint.Encode(buff[1+n:], l)
-	if m == 0 {
-		return errors.New("gumble: varint out of range")
-	}
-	header := buff[:1+n+m]
+func (c *Conn) WriteAudio(format, target byte, sequence int64, final bool, data []byte, X, Y, Z *float32, protoMsg bool) error {
+	if protoMsg {
+		p := MumbleUDPProto.Audio{
+			Header: &MumbleUDPProto.Audio_Target{
+				Target: uint32(target),
+			},
+			FrameNumber:  uint64(sequence),
+			OpusData:     data,
+			IsTerminator: final,
+			// PositionalData: [X, Y, Z],
+		}
 
-	var positionalLength int
-	if X != nil {
-		positionalLength = 3 * 4
-	}
-
-	c.Lock()
-	defer c.Unlock()
-
-	if err := c.writeHeader(1, uint32(len(header)+len(data)+positionalLength)); err != nil {
-		return err
-	}
-	if _, err := c.Conn.Write(header); err != nil {
-		return err
-	}
-	if _, err := c.Conn.Write(data); err != nil {
-		return err
-	}
-
-	if positionalLength > 0 {
-		if err := binary.Write(c.Conn, binary.LittleEndian, *X); err != nil {
+		d, err := proto.Marshal(&p)
+		if err != nil {
 			return err
 		}
-		if err := binary.Write(c.Conn, binary.LittleEndian, *Y); err != nil {
+
+		var header [1]byte
+		header[0] = 0 // UDP Type Message
+		data := append(header[:], d...)
+
+		if err := c.WritePacket(uint16(1), data); err != nil {
 			return err
 		}
-		if err := binary.Write(c.Conn, binary.LittleEndian, *Z); err != nil {
+	} else {
+		var buff [1 + varint.MaxVarintLen*2]byte
+		buff[0] = (format << 5) | target
+		n := varint.Encode(buff[1:], sequence)
+		if n == 0 {
+			return errors.New("gumble: varint out of range")
+		}
+		l := int64(len(data))
+		if final {
+			l |= 0x2000
+		}
+		m := varint.Encode(buff[1+n:], l)
+		if m == 0 {
+			return errors.New("gumble: varint out of range")
+		}
+		header := buff[:1+n+m]
+
+		var positionalLength int
+		if X != nil {
+			positionalLength = 3 * 4
+		}
+
+		c.Lock()
+		defer c.Unlock()
+
+		if err := c.writeHeader(1, uint32(len(header)+len(data)+positionalLength)); err != nil {
 			return err
+		}
+		if _, err := c.Conn.Write(header); err != nil {
+			return err
+		}
+		if _, err := c.Conn.Write(data); err != nil {
+			return err
+		}
+
+		if positionalLength > 0 {
+			if err := binary.Write(c.Conn, binary.LittleEndian, *X); err != nil {
+				return err
+			}
+			if err := binary.Write(c.Conn, binary.LittleEndian, *Y); err != nil {
+				return err
+			}
+			if err := binary.Write(c.Conn, binary.LittleEndian, *Z); err != nil {
+				return err
+			}
 		}
 	}
 

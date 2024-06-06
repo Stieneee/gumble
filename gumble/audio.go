@@ -69,7 +69,11 @@ func (a AudioBuffer) writeAudio(client *Client, seq int64, final bool) error {
 		targetID = byte(target.ID)
 	}
 	// TODO: re-enable positional audio
-	return client.Conn.WriteAudio(byte(4), targetID, seq, final, raw, nil, nil, nil)
+	var proto bool = false
+	if client.Version.Version >= uint64(1<<48|5<<32) {
+		proto = true
+	}
+	return client.Conn.WriteAudio(byte(4), targetID, seq, final, raw, nil, nil, nil, proto)
 }
 
 // AudioPacket contains incoming audio samples and information.

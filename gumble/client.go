@@ -43,6 +43,8 @@ type Client struct {
 	// The underlying Conn to the server.
 	Conn *Conn
 
+	// The version of the server.
+	Version *Version
 	// The users currently connected to the server.
 	Users Users
 	// The connected server's channels.
@@ -235,6 +237,9 @@ func (c *Client) readRoutine() {
 
 	for {
 		pType, data, err := c.Conn.ReadPacket()
+		// print the the ptype and data in hex
+		// fmt.Printf("pType: %x\n", pType)
+		// fmt.Printf("data: %x\n", data)
 		if err != nil {
 			break
 		}
