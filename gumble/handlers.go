@@ -102,6 +102,28 @@ func (c *Client) handleUDPTunnel(buffer []byte) error {
 		return errInvalidProtobuf
 	}
 
+	// sendEvent sends an audio packet to all audio listeners.
+	var sendEvent = func(event *AudioPacket, user *User) {
+		c.volatile.Lock()
+		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
+			c.volatile.Unlock()
+			ch := item.streams[user]
+			if ch == nil {
+				ch = make(chan *AudioPacket)
+				item.streams[user] = ch
+				event := AudioStreamEvent{
+					Client: c,
+					User:   user,
+					C:      ch,
+				}
+				item.listener.OnAudioStream(&event)
+			}
+			ch <- event
+			c.volatile.Lock()
+		}
+		c.volatile.Unlock()
+	}
+
 	if c.Version.Version < uint64(1<<48|5<<32) {
 		// old varint decode
 		// Opus only
@@ -180,24 +202,7 @@ func (c *Client) handleUDPTunnel(buffer []byte) error {
 			event.HasPosition = true
 		}
 
-		c.volatile.Lock()
-		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
-			c.volatile.Unlock()
-			ch := item.streams[user]
-			if ch == nil {
-				ch = make(chan *AudioPacket)
-				item.streams[user] = ch
-				event := AudioStreamEvent{
-					Client: c,
-					User:   user,
-					C:      ch,
-				}
-				item.listener.OnAudioStream(&event)
-			}
-			ch <- &event
-			c.volatile.Lock()
-		}
-		c.volatile.Unlock()
+		sendEvent(&event, user)
 	} else {
 		// decode newer protobuf
 		// fmt.Println("Decoding newer protobuf")
@@ -239,24 +244,7 @@ func (c *Client) handleUDPTunnel(buffer []byte) error {
 
 		// TODO positional audio
 
-		c.volatile.Lock()
-		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
-			c.volatile.Unlock()
-			ch := item.streams[user]
-			if ch == nil {
-				ch = make(chan *AudioPacket)
-				item.streams[user] = ch
-				event := AudioStreamEvent{
-					Client: c,
-					User:   user,
-					C:      ch,
-				}
-				item.listener.OnAudioStream(&event)
-			}
-			ch <- &event
-			c.volatile.Lock()
-		}
-		c.volatile.Unlock()
+		sendEvent(&event, user)
 	}
 
 	return nil
@@ -523,20 +511,28 @@ func (c *Client) handleUserRemove(buffer []byte) error {
 
 	{
 		c.volatile.Lock()
+		defer c.volatile.Unlock()
 
 		session := *packet.Session
 		event.User = c.Users[session]
 		if event.User == nil {
-			c.volatile.Unlock()
 			return errInvalidProtobuf
 		}
 		if packet.Actor != nil {
 			event.Actor = c.Users[*packet.Actor]
 			if event.Actor == nil {
-				c.volatile.Unlock()
 				return errInvalidProtobuf
 			}
 			event.Type |= UserChangeKicked
+		}
+
+		// Clean up audio channels
+		for item := c.Config.AudioListeners.head; item != nil; item = item.next {
+			ch := item.streams[event.User]
+			if ch != nil {
+				close(ch)
+				delete(item.streams, event.User)
+			}
 		}
 
 		event.User.client = nil
@@ -557,8 +553,6 @@ func (c *Client) handleUserRemove(buffer []byte) error {
 				c.disconnectEvent.Type = DisconnectKicked
 			}
 		}
-
-		c.volatile.Unlock()
 	}
 
 	if c.State() == StateSynced {
