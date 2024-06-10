@@ -205,7 +205,6 @@ func (c *Client) handleUDPTunnel(buffer []byte) error {
 		sendEvent(&event, user)
 	} else {
 		// decode newer protobuf
-		// fmt.Println("Decoding newer protobuf")
 		p := MumbleUDPProto.Audio{}
 		err := proto.Unmarshal(buffer[1:], &p)
 		if err != nil {
@@ -511,16 +510,17 @@ func (c *Client) handleUserRemove(buffer []byte) error {
 
 	{
 		c.volatile.Lock()
-		defer c.volatile.Unlock()
 
 		session := *packet.Session
 		event.User = c.Users[session]
 		if event.User == nil {
+			c.volatile.Unlock()
 			return errInvalidProtobuf
 		}
 		if packet.Actor != nil {
 			event.Actor = c.Users[*packet.Actor]
 			if event.Actor == nil {
+				c.volatile.Unlock()
 				return errInvalidProtobuf
 			}
 			event.Type |= UserChangeKicked
@@ -553,6 +553,8 @@ func (c *Client) handleUserRemove(buffer []byte) error {
 				c.disconnectEvent.Type = DisconnectKicked
 			}
 		}
+
+		c.volatile.Unlock()
 	}
 
 	if c.State() == StateSynced {
