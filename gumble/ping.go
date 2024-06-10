@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -157,7 +158,7 @@ func PingProto(address string, interval, timeout time.Duration) (*PingResponse, 
 		header[0] = 0x01
 		packet = append(header[:], packet...)
 
-		id := string(p.GetTimestamp())
+		id := fmt.Sprint(p.GetTimestamp())
 		idsLock.Lock()
 		ids[id] = time.Now()
 		idsLock.Unlock()
@@ -205,7 +206,7 @@ func PingProto(address string, interval, timeout time.Duration) (*PingResponse, 
 			continue
 		}
 		// Unmarshal succeeded, process the packet
-		id := string(p.GetTimestamp())
+		id := fmt.Sprint(p.GetTimestamp())
 		idsLock.Lock()
 		sendTime, ok := ids[id]
 		idsLock.Unlock()
